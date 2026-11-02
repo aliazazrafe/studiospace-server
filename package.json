@@ -2,7 +2,7 @@
 {
   "name": "studiospace-server",
   "version": "1.0.0",
-  "description": "",
+  "description": "StudioSpace Backend API",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -12,8 +12,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
+    "@better-auth/mongo-adapter": "^1.7.15",
     "better-auth": "^1.7.15",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",

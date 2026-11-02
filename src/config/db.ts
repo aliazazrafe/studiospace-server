@@ -1,27 +1,29 @@
 
+import "dotenv/config";
 import { MongoClient, type Db } from "mongodb";
 
-let client: MongoClient | null = null;
-let database: Db | null = null;
+const uri = process.env.MONGODB_URI;
+
+if (!uri) {
+  throw new Error("MONGODB_URI is missing from .env");
+}
+
+export const client = new MongoClient(uri);
+
+export const database: Db = client.db(
+  process.env.DB_NAME || "studiospace"
+);
+
+let isConnected = false;
 
 export async function connectDB(): Promise<Db> {
-  if (database) {
+  if (isConnected) {
     return database;
   }
 
-  const uri = process.env.MONGODB_URI;
-
-  if (!uri) {
-    throw new Error("MONGODB_URI is missing from .env");
-  }
-
-  client = new MongoClient(uri);
-
   await client.connect();
 
-  database = client.db(
-    process.env.DB_NAME || "studiospace"
-  );
+  isConnected = true;
 
   console.log("MongoDB connected successfully");
 
@@ -29,9 +31,5 @@ export async function connectDB(): Promise<Db> {
 }
 
 export function getDB(): Db {
-  if (!database) {
-    throw new Error("Database is not connected");
-  }
-
   return database;
 }
