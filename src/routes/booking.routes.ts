@@ -198,7 +198,148 @@ router.get("/owner", async (req: Request, res: Response) => {
   }
 });
 
-// 4. Get Single Booking
+// 4. Dashboard Statistics
+router.get("/dashboard", async (req: Request, res: Response) => {
+  try {
+    const session = await getAuthenticatedUser(req);
+
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        message: "Please login first.",
+      });
+    }
+
+    const db = getDB();
+    const userId = session.user.id;
+
+    // Total studios owned by user
+    const totalStudios = await db
+      .collection("studios")
+      .countDocuments({
+        ownerId: userId,
+      });
+
+    // Customer booking statistics
+    const myBookingFilter = {
+      userId,
+    };
+
+    const [
+      totalBookings,
+      pendingBookings,
+      confirmedBookings,
+      rejectedBookings,
+      cancelledBookings,
+    ] = await Promise.all([
+      db.collection("bookings").countDocuments(myBookingFilter),
+
+      db.collection("bookings").countDocuments({
+        ...myBookingFilter,
+        status: "pending",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...myBookingFilter,
+        status: "confirmed",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...myBookingFilter,
+        status: "rejected",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...myBookingFilter,
+        status: "cancelled",
+      }),
+    ]);
+
+    // Owner booking statistics
+    const ownerBookingFilter = {
+      ownerId: userId,
+    };
+
+    const [
+      receivedBookings,
+      ownerPendingBookings,
+      ownerConfirmedBookings,
+      ownerRejectedBookings,
+      ownerCancelledBookings,
+    ] = await Promise.all([
+      db.collection("bookings").countDocuments(ownerBookingFilter),
+
+      db.collection("bookings").countDocuments({
+        ...ownerBookingFilter,
+        status: "pending",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...ownerBookingFilter,
+        status: "confirmed",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...ownerBookingFilter,
+        status: "rejected",
+      }),
+
+      db.collection("bookings").countDocuments({
+        ...ownerBookingFilter,
+        status: "cancelled",
+      }),
+    ]);
+
+    // Recent bookings
+    const recentBookings = await db
+      .collection<Booking>("bookings")
+      .find({
+        $or: [
+          { userId },
+          { ownerId: userId },
+        ],
+      })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    return res.status(200).json({
+      success: true,
+      dashboard: {
+        studios: {
+          total: totalStudios,
+        },
+
+        myBookings: {
+          total: totalBookings,
+          pending: pendingBookings,
+          confirmed: confirmedBookings,
+          rejected: rejectedBookings,
+          cancelled: cancelledBookings,
+        },
+
+        ownerBookings: {
+          total: receivedBookings,
+          pending: ownerPendingBookings,
+          confirmed: ownerConfirmedBookings,
+          rejected: ownerRejectedBookings,
+          cancelled: ownerCancelledBookings,
+        },
+
+        recentBookings,
+      },
+    });
+  } catch (error) {
+    console.error("Dashboard error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch dashboard statistics.",
+    });
+  }
+});
+
+// 5. Get Single Booking
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -250,7 +391,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// 5. Cancel Booking
+// 6. Cancel Booking
 router.patch("/:id/cancel", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -309,7 +450,7 @@ router.patch("/:id/cancel", async (req: Request, res: Response) => {
   }
 });
 
-// 6. Owner Confirm or Reject Booking
+// 7. Owner Confirm or Reject Booking
 router.patch("/:id/status", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -363,7 +504,9 @@ router.patch("/:id/status", async (req: Request, res: Response) => {
 
     const updatedBooking = await db
       .collection<Booking>("bookings")
-      .findOne({ _id: new ObjectId(id) });
+      .findOne({
+        _id: new ObjectId(id),
+      });
 
     return res.status(200).json({
       success: true,
