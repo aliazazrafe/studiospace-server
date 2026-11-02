@@ -1,6 +1,6 @@
 
 import { Router, type Request, type Response } from "express";
-import { ObjectId } from "mongodb";
+import { ObjectId, type Document } from "mongodb";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { getDB } from "../config/db.js";
@@ -72,6 +72,7 @@ router.post("/", async (req: Request, res: Response) => {
     };
 
     const db = getDB();
+
     const result = await db.collection("studios").insertOne(studio);
 
     return res.status(201).json({
@@ -92,20 +93,186 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// Get all studios
-router.get("/", async (_req: Request, res: Response) => {
+// Get all studios with Search, Filter, Sorting and Pagination
+router.get("/", async (req: Request, res: Response) => {
   try {
     const db = getDB();
 
-    const studios = await db
-      .collection("studios")
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
+    const search =
+      typeof req.query.search === "string"
+        ? req.query.search.trim()
+        : "";
+
+    const category =
+      typeof req.query.category === "string"
+        ? req.query.category.trim()
+        : "";
+
+    const location =
+      typeof req.query.location === "string"
+        ? req.query.location.trim()
+        : "";
+
+    const minPrice =
+      typeof req.query.minPrice === "string" &&
+      req.query.minPrice.trim() !== ""
+        ? Number(req.query.minPrice)
+        : undefined;
+
+    const maxPrice =
+      typeof req.query.maxPrice === "string" &&
+      req.query.maxPrice.trim() !== ""
+        ? Number(req.query.maxPrice)
+        : undefined;
+
+    const page =
+      typeof req.query.page === "string"
+        ? Number(req.query.page)
+        : 1;
+
+    const limit =
+      typeof req.query.limit === "string"
+        ? Number(req.query.limit)
+        : 6;
+
+    const sortBy =
+      typeof req.query.sortBy === "string"
+        ? req.query.sortBy
+        : "newest";
+
+    // Validate pagination
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid page or limit.",
+      });
+    }
+
+    // Validate price range
+    if (
+      (minPrice !== undefined &&
+        (!Number.isFinite(minPrice) || minPrice < 0)) ||
+      (maxPrice !== undefined &&
+        (!Number.isFinite(maxPrice) || maxPrice < 0)) ||
+      (minPrice !== undefined &&
+        maxPrice !== undefined &&
+        minPrice > maxPrice)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid price range.",
+      });
+    }
+
+    // Validate sorting
+    const allowedSortOptions = [
+      "newest",
+      "price-low",
+      "price-high",
+    ];
+
+    if (!allowedSortOptions.includes(sortBy)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid sorting option.",
+      });
+    }
+
+    // Escape special regex characters
+    const escapeRegex = (value: string) =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Build MongoDB filter
+    const filter: Document = {};
+
+    // Search by studio name
+    if (search) {
+      filter.name = {
+        $regex: escapeRegex(search),
+        $options: "i",
+      };
+    }
+
+    // Filter by category
+    if (category) {
+      filter.category = {
+        $regex: `^${escapeRegex(category)}$`,
+        $options: "i",
+      };
+    }
+
+    // Filter by location
+    if (location) {
+      filter.location = {
+        $regex: escapeRegex(location),
+        $options: "i",
+      };
+    }
+
+    // Filter by price
+    if (minPrice !== undefined || maxPrice !== undefined) {
+      const priceFilter: Record<string, number> = {};
+
+      if (minPrice !== undefined) {
+        priceFilter.$gte = minPrice;
+      }
+
+      if (maxPrice !== undefined) {
+        priceFilter.$lte = maxPrice;
+      }
+
+      filter.price = priceFilter;
+    }
+
+    // Sorting
+    const sortOptions: Record<string, 1 | -1> =
+      sortBy === "price-low"
+        ? { price: 1 }
+        : sortBy === "price-high"
+          ? { price: -1 }
+          : { createdAt: -1 };
+
+    // Pagination
+    const safeLimit = Math.min(limit, 50);
+    const skip = (page - 1) * safeLimit;
+
+    if (!Number.isSafeInteger(skip)) {
+      return res.status(400).json({
+        success: false,
+        message: "Page number is too large.",
+      });
+    }
+
+    const [studios, total] = await Promise.all([
+      db
+        .collection("studios")
+        .find(filter)
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(safeLimit)
+        .toArray(),
+
+      db.collection("studios").countDocuments(filter),
+    ]);
+
+    const totalPages = Math.ceil(total / safeLimit);
 
     return res.status(200).json({
       success: true,
       count: studios.length,
+      pagination: {
+        total,
+        page,
+        limit: safeLimit,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
       studios,
     });
   } catch (error) {
@@ -193,7 +360,17 @@ router.patch("/:id", async (req: Request, res: Response) => {
     if (description !== undefined) updates.description = description;
     if (category !== undefined) updates.category = category;
     if (location !== undefined) updates.location = location;
-    if (images !== undefined) updates.images = images;
+
+    if (images !== undefined) {
+      if (!Array.isArray(images)) {
+        return res.status(400).json({
+          success: false,
+          message: "Images must be an array.",
+        });
+      }
+
+      updates.images = images;
+    }
 
     if (price !== undefined) {
       if (
