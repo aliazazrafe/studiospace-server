@@ -7,14 +7,14 @@ import { getDB } from "../config/db.js";
 
 const router = Router();
 
-// Check authenticated user
+// Authentication helper
 async function getAuthenticatedUser(req: Request) {
   return auth.api.getSession({
     headers: fromNodeHeaders(req.headers),
   });
 }
 
-// Create a new studio
+// 1. Create Studio
 router.post("/", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -72,7 +72,6 @@ router.post("/", async (req: Request, res: Response) => {
     };
 
     const db = getDB();
-
     const result = await db.collection("studios").insertOne(studio);
 
     return res.status(201).json({
@@ -93,7 +92,44 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// Get all studios with Search, Filter, Sorting and Pagination
+// 2. Get My Studio Listings
+router.get("/my", async (req: Request, res: Response) => {
+  try {
+    const session = await getAuthenticatedUser(req);
+
+    if (!session) {
+      return res.status(401).json({
+        success: false,
+        message: "Please login first.",
+      });
+    }
+
+    const db = getDB();
+
+    const studios = await db
+      .collection("studios")
+      .find({
+        ownerId: session.user.id,
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({
+      success: true,
+      count: studios.length,
+      studios,
+    });
+  } catch (error) {
+    console.error("Get my studios error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch your studio listings.",
+    });
+  }
+});
+
+// 3. Get All Studios with Search, Filter, Sorting and Pagination
 router.get("/", async (req: Request, res: Response) => {
   try {
     const db = getDB();
@@ -140,7 +176,6 @@ router.get("/", async (req: Request, res: Response) => {
         ? req.query.sortBy
         : "newest";
 
-    // Validate pagination
     if (
       !Number.isSafeInteger(page) ||
       page < 1 ||
@@ -153,7 +188,6 @@ router.get("/", async (req: Request, res: Response) => {
       });
     }
 
-    // Validate price range
     if (
       (minPrice !== undefined &&
         (!Number.isFinite(minPrice) || minPrice < 0)) ||
@@ -169,28 +203,18 @@ router.get("/", async (req: Request, res: Response) => {
       });
     }
 
-    // Validate sorting
-    const allowedSortOptions = [
-      "newest",
-      "price-low",
-      "price-high",
-    ];
-
-    if (!allowedSortOptions.includes(sortBy)) {
+    if (!["newest", "price-low", "price-high"].includes(sortBy)) {
       return res.status(400).json({
         success: false,
         message: "Invalid sorting option.",
       });
     }
 
-    // Escape special regex characters
     const escapeRegex = (value: string) =>
       value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    // Build MongoDB filter
     const filter: Document = {};
 
-    // Search by studio name
     if (search) {
       filter.name = {
         $regex: escapeRegex(search),
@@ -198,7 +222,6 @@ router.get("/", async (req: Request, res: Response) => {
       };
     }
 
-    // Filter by category
     if (category) {
       filter.category = {
         $regex: `^${escapeRegex(category)}$`,
@@ -206,7 +229,6 @@ router.get("/", async (req: Request, res: Response) => {
       };
     }
 
-    // Filter by location
     if (location) {
       filter.location = {
         $regex: escapeRegex(location),
@@ -214,7 +236,6 @@ router.get("/", async (req: Request, res: Response) => {
       };
     }
 
-    // Filter by price
     if (minPrice !== undefined || maxPrice !== undefined) {
       const priceFilter: Record<string, number> = {};
 
@@ -229,7 +250,6 @@ router.get("/", async (req: Request, res: Response) => {
       filter.price = priceFilter;
     }
 
-    // Sorting
     const sortOptions: Record<string, 1 | -1> =
       sortBy === "price-low"
         ? { price: 1 }
@@ -237,7 +257,6 @@ router.get("/", async (req: Request, res: Response) => {
           ? { price: -1 }
           : { createdAt: -1 };
 
-    // Pagination
     const safeLimit = Math.min(limit, 50);
     const skip = (page - 1) * safeLimit;
 
@@ -285,7 +304,7 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// Get single studio by ID
+// 4. Get Single Studio
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
@@ -324,7 +343,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// Update studio
+// 5. Update Studio
 router.patch("/:id", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -434,7 +453,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// Delete studio
+// 6. Delete Studio
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
