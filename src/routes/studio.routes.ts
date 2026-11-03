@@ -7,14 +7,70 @@ import { getDB } from "../config/db.js";
 
 const router = Router();
 
-// Authentication helper
 async function getAuthenticatedUser(req: Request) {
   return auth.api.getSession({
     headers: fromNodeHeaders(req.headers),
   });
 }
 
-// 1. Create Studio
+function isValidId(id: unknown): id is string {
+  return (
+    typeof id === "string" &&
+    /^[a-fA-F0-9]{24}$/.test(id)
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isValidImageArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (image) =>
+        typeof image === "string" &&
+        /^https?:\/\/\S+$/i.test(image)
+    )
+  );
+}
+
+function isValidNumber(
+  value: unknown,
+  minimum: number
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimum
+  );
+}
+
+function isValidCapacity(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0
+  );
+}
+
+function isValidAmenities(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (amenity) =>
+        typeof amenity === "string" &&
+        amenity.trim().length > 0
+    )
+  );
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// 1. CREATE STUDIO
+
 router.post("/", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -33,46 +89,89 @@ router.post("/", async (req: Request, res: Response) => {
       location,
       price,
       images,
-    } = req.body;
+      securityDeposit,
+      capacity,
+      amenities,
+    } = req.body ?? {};
 
     if (
-      !name ||
-      !description ||
-      !category ||
-      !location ||
-      price === undefined
+      !isNonEmptyString(name) ||
+      !isNonEmptyString(description) ||
+      !isNonEmptyString(category) ||
+      !isNonEmptyString(location) ||
+      !isValidNumber(price, 0)
     ) {
       return res.status(400).json({
         success: false,
-        message: "Please provide all required fields.",
+        message: "Please provide valid required studio fields.",
       });
     }
 
     if (
-      typeof price !== "number" ||
-      !Number.isFinite(price) ||
-      price < 0
+      images !== undefined &&
+      !isValidImageArray(images)
     ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid price.",
+        message: "Images must be an array of valid image URLs.",
       });
     }
+
+    if (
+      securityDeposit !== undefined &&
+      !isValidNumber(securityDeposit, 0)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid security deposit.",
+      });
+    }
+
+    if (
+      capacity !== undefined &&
+      !isValidCapacity(capacity)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Capacity must be a positive whole number.",
+      });
+    }
+
+    if (
+      amenities !== undefined &&
+      !isValidAmenities(amenities)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Amenities must be an array of strings.",
+      });
+    }
+
+    const now = new Date();
 
     const studio = {
-      name,
-      description,
-      category,
-      location,
+      name: name.trim(),
+      description: description.trim(),
+      category: category.trim(),
+      location: location.trim(),
       price,
-      images: Array.isArray(images) ? images : [],
+      images: images ?? [],
+      securityDeposit: securityDeposit ?? 0,
+      capacity: capacity ?? null,
+      amenities: amenities ?? [],
       ownerId: session.user.id,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      ownerName: session.user.name ?? "",
+      ownerEmail: session.user.email ?? "",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
     };
 
     const db = getDB();
-    const result = await db.collection("studios").insertOne(studio);
+
+    const result = await db
+      .collection("studios")
+      .insertOne(studio);
 
     return res.status(201).json({
       success: true,
@@ -92,8 +191,9 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// 2. Get My Studio Listings
-router.get("/my", async (req: Request, res: Response) => {
+// 2. GET MY STUDIO LISTINGS
+
+const getMyStudios = async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
 
@@ -105,14 +205,42 @@ router.get("/my", async (req: Request, res: Response) => {
     }
 
     const db = getDB();
+    const currentUserId = session.user.id;
+
+    // Temporary debugging: remove after diagnosis.
+    console.log("MY LISTINGS SESSION USER ID:", currentUserId);
 
     const studios = await db
       .collection("studios")
       .find({
-        ownerId: session.user.id,
+        ownerId: currentUserId,
       })
       .sort({ createdAt: -1 })
       .toArray();
+
+    console.log("MY LISTINGS MATCHED COUNT:", studios.length);
+
+    // Diagnose mismatched owner IDs without changing ownership.
+    if (studios.length === 0) {
+      const ownerSummary = await db
+        .collection("studios")
+        .aggregate([
+          {
+            $group: {
+              _id: "$ownerId",
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { count: -1 } },
+          { $limit: 20 },
+        ])
+        .toArray();
+
+      console.log(
+        "STUDIO OWNER ID SUMMARY:",
+        JSON.stringify(ownerSummary)
+      );
+    }
 
     return res.status(200).json({
       success: true,
@@ -127,9 +255,13 @@ router.get("/my", async (req: Request, res: Response) => {
       message: "Failed to fetch your studio listings.",
     });
   }
-});
+};
 
-// 3. Get All Studios with Search, Filter, Sorting and Pagination
+router.get("/my-listings", getMyStudios);
+router.get("/my", getMyStudios);
+
+// 3. GET ALL STUDIOS
+
 router.get("/", async (req: Request, res: Response) => {
   try {
     const db = getDB();
@@ -190,9 +322,9 @@ router.get("/", async (req: Request, res: Response) => {
 
     if (
       (minPrice !== undefined &&
-        (!Number.isFinite(minPrice) || minPrice < 0)) ||
+        !isValidNumber(minPrice, 0)) ||
       (maxPrice !== undefined &&
-        (!Number.isFinite(maxPrice) || maxPrice < 0)) ||
+        !isValidNumber(maxPrice, 0)) ||
       (minPrice !== undefined &&
         maxPrice !== undefined &&
         minPrice > maxPrice)
@@ -209,9 +341,6 @@ router.get("/", async (req: Request, res: Response) => {
         message: "Invalid sorting option.",
       });
     }
-
-    const escapeRegex = (value: string) =>
-      value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
     const filter: Document = {};
 
@@ -304,12 +433,13 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// 4. Get Single Studio
+// 4. GET SINGLE STUDIO
+
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
 
-    if (typeof id !== "string" || !ObjectId.isValid(id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid studio ID.",
@@ -318,9 +448,11 @@ router.get("/:id", async (req: Request, res: Response) => {
 
     const db = getDB();
 
-    const studio = await db.collection("studios").findOne({
-      _id: new ObjectId(id),
-    });
+    const studio = await db
+      .collection("studios")
+      .findOne({
+        _id: new ObjectId(id),
+      });
 
     if (!studio) {
       return res.status(404).json({
@@ -343,8 +475,9 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// 5. Update Studio
-router.patch("/:id", async (req: Request, res: Response) => {
+// 5. UPDATE STUDIO
+
+const updateStudio = async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
 
@@ -357,7 +490,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
 
     const id = req.params.id;
 
-    if (typeof id !== "string" || !ObjectId.isValid(id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid studio ID.",
@@ -371,32 +504,35 @@ router.patch("/:id", async (req: Request, res: Response) => {
       location,
       price,
       images,
-    } = req.body;
+      securityDeposit,
+      capacity,
+      amenities,
+    } = req.body ?? {};
 
     const updates: Record<string, unknown> = {};
 
-    if (name !== undefined) updates.name = name;
-    if (description !== undefined) updates.description = description;
-    if (category !== undefined) updates.category = category;
-    if (location !== undefined) updates.location = location;
+    const stringFields = {
+      name,
+      description,
+      category,
+      location,
+    };
 
-    if (images !== undefined) {
-      if (!Array.isArray(images)) {
-        return res.status(400).json({
-          success: false,
-          message: "Images must be an array.",
-        });
+    for (const [key, value] of Object.entries(stringFields)) {
+      if (value !== undefined) {
+        if (!isNonEmptyString(value)) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid ${key}.`,
+          });
+        }
+
+        updates[key] = value.trim();
       }
-
-      updates.images = images;
     }
 
     if (price !== undefined) {
-      if (
-        typeof price !== "number" ||
-        !Number.isFinite(price) ||
-        price < 0
-      ) {
+      if (!isValidNumber(price, 0)) {
         return res.status(400).json({
           success: false,
           message: "Invalid price.",
@@ -404,6 +540,50 @@ router.patch("/:id", async (req: Request, res: Response) => {
       }
 
       updates.price = price;
+    }
+
+    if (securityDeposit !== undefined) {
+      if (!isValidNumber(securityDeposit, 0)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid security deposit.",
+        });
+      }
+
+      updates.securityDeposit = securityDeposit;
+    }
+
+    if (capacity !== undefined) {
+      if (!isValidCapacity(capacity)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid capacity.",
+        });
+      }
+
+      updates.capacity = capacity;
+    }
+
+    if (amenities !== undefined) {
+      if (!isValidAmenities(amenities)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid amenities.",
+        });
+      }
+
+      updates.amenities = amenities;
+    }
+
+    if (images !== undefined) {
+      if (!isValidImageArray(images)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid images.",
+        });
+      }
+
+      updates.images = images;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -417,15 +597,17 @@ router.patch("/:id", async (req: Request, res: Response) => {
 
     const db = getDB();
 
-    const result = await db.collection("studios").updateOne(
-      {
-        _id: new ObjectId(id),
-        ownerId: session.user.id,
-      },
-      {
-        $set: updates,
-      }
-    );
+    const result = await db
+      .collection("studios")
+      .updateOne(
+        {
+          _id: new ObjectId(id),
+          ownerId: session.user.id,
+        },
+        {
+          $set: updates,
+        }
+      );
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -434,9 +616,12 @@ router.patch("/:id", async (req: Request, res: Response) => {
       });
     }
 
-    const updatedStudio = await db.collection("studios").findOne({
-      _id: new ObjectId(id),
-    });
+    const updatedStudio = await db
+      .collection("studios")
+      .findOne({
+        _id: new ObjectId(id),
+        ownerId: session.user.id,
+      });
 
     return res.status(200).json({
       success: true,
@@ -451,9 +636,13 @@ router.patch("/:id", async (req: Request, res: Response) => {
       message: "Failed to update studio.",
     });
   }
-});
+};
 
-// 6. Delete Studio
+router.patch("/:id", updateStudio);
+router.put("/:id", updateStudio);
+
+// 6. DELETE STUDIO
+
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -467,7 +656,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
     const id = req.params.id;
 
-    if (typeof id !== "string" || !ObjectId.isValid(id)) {
+    if (!isValidId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid studio ID.",
@@ -476,10 +665,12 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
     const db = getDB();
 
-    const result = await db.collection("studios").deleteOne({
-      _id: new ObjectId(id),
-      ownerId: session.user.id,
-    });
+    const result = await db
+      .collection("studios")
+      .deleteOne({
+        _id: new ObjectId(id),
+        ownerId: session.user.id,
+      });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({
