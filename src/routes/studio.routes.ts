@@ -1,4 +1,3 @@
-
 import { Router, type Request, type Response } from "express";
 import { ObjectId, type Document } from "mongodb";
 import { fromNodeHeaders } from "better-auth/node";
@@ -14,10 +13,7 @@ async function getAuthenticatedUser(req: Request) {
 }
 
 function isValidId(id: unknown): id is string {
-  return (
-    typeof id === "string" &&
-    /^[a-fA-F0-9]{24}$/.test(id)
-  );
+  return typeof id === "string" && /^[a-fA-F0-9]{24}$/.test(id);
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -27,12 +23,23 @@ function isNonEmptyString(value: unknown): value is string {
 function isValidImageArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
-    value.every(
-      (image) =>
-        typeof image === "string" &&
-        /^https?:\/\/\S+$/i.test(image)
-    )
+    value.every((image) => {
+      if (typeof image !== "string" || !image.trim()) {
+        return false;
+      }
+
+      try {
+        const url = new URL(image.trim());
+        return url.protocol === "http:" || url.protocol === "https:";
+      } catch {
+        return false;
+      }
+    })
   );
+}
+
+function normalizeImages(images: string[]): string[] {
+  return Array.from(new Set(images.map((image) => image.trim())));
 }
 
 function isValidNumber(
@@ -59,8 +66,7 @@ function isValidAmenities(value: unknown): value is string[] {
     Array.isArray(value) &&
     value.every(
       (amenity) =>
-        typeof amenity === "string" &&
-        amenity.trim().length > 0
+        typeof amenity === "string" && amenity.trim().length > 0
     )
   );
 }
@@ -69,8 +75,7 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// 1. CREATE STUDIO
-
+// CREATE STUDIO
 router.post("/", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -107,13 +112,10 @@ router.post("/", async (req: Request, res: Response) => {
       });
     }
 
-    if (
-      images !== undefined &&
-      !isValidImageArray(images)
-    ) {
+    if (images !== undefined && !isValidImageArray(images)) {
       return res.status(400).json({
         success: false,
-        message: "Images must be an array of valid image URLs.",
+        message: "Images must be an array of valid HTTP or HTTPS URLs.",
       });
     }
 
@@ -127,23 +129,17 @@ router.post("/", async (req: Request, res: Response) => {
       });
     }
 
-    if (
-      capacity !== undefined &&
-      !isValidCapacity(capacity)
-    ) {
+    if (capacity !== undefined && !isValidCapacity(capacity)) {
       return res.status(400).json({
         success: false,
         message: "Capacity must be a positive whole number.",
       });
     }
 
-    if (
-      amenities !== undefined &&
-      !isValidAmenities(amenities)
-    ) {
+    if (amenities !== undefined && !isValidAmenities(amenities)) {
       return res.status(400).json({
         success: false,
-        message: "Amenities must be an array of strings.",
+        message: "Amenities must be an array of non-empty strings.",
       });
     }
 
@@ -155,10 +151,13 @@ router.post("/", async (req: Request, res: Response) => {
       category: category.trim(),
       location: location.trim(),
       price,
-      images: images ?? [],
+      images: images === undefined ? [] : normalizeImages(images),
       securityDeposit: securityDeposit ?? 0,
       capacity: capacity ?? null,
-      amenities: amenities ?? [],
+      amenities:
+        amenities === undefined
+          ? []
+          : amenities.map((amenity: string) => amenity.trim()),
       ownerId: session.user.id,
       ownerName: session.user.name ?? "",
       ownerEmail: session.user.email ?? "",
@@ -167,9 +166,7 @@ router.post("/", async (req: Request, res: Response) => {
       updatedAt: now,
     };
 
-    const db = getDB();
-
-    const result = await db
+    const result = await getDB()
       .collection("studios")
       .insertOne(studio);
 
@@ -191,8 +188,7 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-// 2. GET MY STUDIO LISTINGS
-
+// GET MY STUDIO LISTINGS
 const getMyStudios = async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -204,43 +200,11 @@ const getMyStudios = async (req: Request, res: Response) => {
       });
     }
 
-    const db = getDB();
-    const currentUserId = session.user.id;
-
-    // Temporary debugging: remove after diagnosis.
-    console.log("MY LISTINGS SESSION USER ID:", currentUserId);
-
-    const studios = await db
+    const studios = await getDB()
       .collection("studios")
-      .find({
-        ownerId: currentUserId,
-      })
+      .find({ ownerId: session.user.id })
       .sort({ createdAt: -1 })
       .toArray();
-
-    console.log("MY LISTINGS MATCHED COUNT:", studios.length);
-
-    // Diagnose mismatched owner IDs without changing ownership.
-    if (studios.length === 0) {
-      const ownerSummary = await db
-        .collection("studios")
-        .aggregate([
-          {
-            $group: {
-              _id: "$ownerId",
-              count: { $sum: 1 },
-            },
-          },
-          { $sort: { count: -1 } },
-          { $limit: 20 },
-        ])
-        .toArray();
-
-      console.log(
-        "STUDIO OWNER ID SUMMARY:",
-        JSON.stringify(ownerSummary)
-      );
-    }
 
     return res.status(200).json({
       success: true,
@@ -260,8 +224,7 @@ const getMyStudios = async (req: Request, res: Response) => {
 router.get("/my-listings", getMyStudios);
 router.get("/my", getMyStudios);
 
-// 3. GET ALL STUDIOS
-
+// GET ALL STUDIOS
 router.get("/", async (req: Request, res: Response) => {
   try {
     const db = getDB();
@@ -321,10 +284,8 @@ router.get("/", async (req: Request, res: Response) => {
     }
 
     if (
-      (minPrice !== undefined &&
-        !isValidNumber(minPrice, 0)) ||
-      (maxPrice !== undefined &&
-        !isValidNumber(maxPrice, 0)) ||
+      (minPrice !== undefined && !isValidNumber(minPrice, 0)) ||
+      (maxPrice !== undefined && !isValidNumber(maxPrice, 0)) ||
       (minPrice !== undefined &&
         maxPrice !== undefined &&
         minPrice > maxPrice)
@@ -404,7 +365,6 @@ router.get("/", async (req: Request, res: Response) => {
         .skip(skip)
         .limit(safeLimit)
         .toArray(),
-
       db.collection("studios").countDocuments(filter),
     ]);
 
@@ -433,8 +393,7 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
-// 4. GET SINGLE STUDIO
-
+// GET SINGLE STUDIO
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
@@ -446,13 +405,9 @@ router.get("/:id", async (req: Request, res: Response) => {
       });
     }
 
-    const db = getDB();
-
-    const studio = await db
+    const studio = await getDB()
       .collection("studios")
-      .findOne({
-        _id: new ObjectId(id),
-      });
+      .findOne({ _id: new ObjectId(id) });
 
     if (!studio) {
       return res.status(404).json({
@@ -475,8 +430,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// 5. UPDATE STUDIO
-
+// UPDATE STUDIO
 const updateStudio = async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -572,18 +526,20 @@ const updateStudio = async (req: Request, res: Response) => {
         });
       }
 
-      updates.amenities = amenities;
+      updates.amenities = amenities.map((amenity) => amenity.trim());
     }
 
     if (images !== undefined) {
       if (!isValidImageArray(images)) {
         return res.status(400).json({
           success: false,
-          message: "Invalid images.",
+          message: "Images must be an array of valid HTTP or HTTPS URLs.",
         });
       }
 
-      updates.images = images;
+      // Replace the saved images with the submitted array.
+      // Remove whitespace and exact duplicate URLs.
+      updates.images = normalizeImages(images);
     }
 
     if (Object.keys(updates).length === 0) {
@@ -595,19 +551,15 @@ const updateStudio = async (req: Request, res: Response) => {
 
     updates.updatedAt = new Date();
 
-    const db = getDB();
+    const collection = getDB().collection("studios");
+    const filter = {
+      _id: new ObjectId(id),
+      ownerId: session.user.id,
+    };
 
-    const result = await db
-      .collection("studios")
-      .updateOne(
-        {
-          _id: new ObjectId(id),
-          ownerId: session.user.id,
-        },
-        {
-          $set: updates,
-        }
-      );
+    const result = await collection.updateOne(filter, {
+      $set: updates,
+    });
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -616,12 +568,7 @@ const updateStudio = async (req: Request, res: Response) => {
       });
     }
 
-    const updatedStudio = await db
-      .collection("studios")
-      .findOne({
-        _id: new ObjectId(id),
-        ownerId: session.user.id,
-      });
+    const updatedStudio = await collection.findOne(filter);
 
     return res.status(200).json({
       success: true,
@@ -641,8 +588,7 @@ const updateStudio = async (req: Request, res: Response) => {
 router.patch("/:id", updateStudio);
 router.put("/:id", updateStudio);
 
-// 6. DELETE STUDIO
-
+// DELETE STUDIO
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const session = await getAuthenticatedUser(req);
@@ -663,9 +609,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
       });
     }
 
-    const db = getDB();
-
-    const result = await db
+    const result = await getDB()
       .collection("studios")
       .deleteOne({
         _id: new ObjectId(id),
